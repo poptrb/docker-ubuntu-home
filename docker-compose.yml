@@ -1,0 +1,99 @@
+services:
+  ollama:
+    # entrypoint: ["/usr/bin/bash", "/entrypoint.sh"]
+    volumes:
+      - ollama-data:/root/.ollama
+      - ./entrypoint.sh:/entrypoint.sh
+    container_name: ollama
+    pull_policy: always
+    tty: true
+    restart: unless-stopped
+    image: ollama/ollama:latest
+    ports:
+      - 11434:11434
+    environment:
+      - OLLAMA_KEEP_ALIVE=24h
+      - OLLAMA_HOST=0.0.0.0
+    networks:
+      - ollama
+    privileged: true
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['all']
+              capabilities: [gpu]
+
+  ollama-webui:
+    image: ghcr.io/open-webui/open-webui:main
+    container_name: ollama-webui
+    volumes:
+      - ./ollama/ollama-webui:/app/backend/data
+    depends_on:
+      - ollama
+    environment: # https://docs.openwebui.com/getting-started/env-configuration#default_models
+      - OLLAMA_BASE_URLS=http://host.docker.internal:11434 #comma separated ollama hosts
+      - ENV=dev
+      - WEBUI_AUTH=False
+      - WEBUI_NAME=valiantlynx AI
+      - WEBUI_URL=http://localhost:8080
+      - WEBUI_SECRET_KEY=20lapulasamafreci!
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    restart: unless-stopped
+    networks:
+      - ollama
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.ollama-web-ui.rule=Host(`${LOCAL_HOSTNAME}`)"
+      - "traefik.http.middlewares.ollama-web-ui-https-redirect.redirectscheme.scheme=https"
+      - "traefik.http.middlewares.sslheader2.headers.customrequestheaders.X-Forwarded-Proto=https"
+      - "traefik.http.routers.ollama-web-ui.middlewares=ollama-web-ui-https-redirect"
+      - "traefik.http.routers.ollama-web-ui-secure.entrypoints=https"
+      - "traefik.http.routers.ollama-web-ui-secure.rule=Host(`${LOCAL_HOSTNAME}`)"
+      - "traefik.http.routers.ollama-web-ui-secure.tls=true"
+      - "traefik.http.services.ollama-web-ui.loadbalancer.server.port=8080"
+
+
+  traefik:
+    container_name: traefik
+    environment:
+      TRAEFIK_DASHBOARD_CREDENTIALS: ${TRAEFIK_DASHBOARD_CREDENTIALS}
+    image: traefik:v3.0
+    networks:
+      - docker-socket-proxy
+      - ollama
+    ports:
+      - 80:80
+      - 443:443
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - ./traefik/traefik.yml:/traefik.yml:ro
+      - ./traefik/tls.yml:/tls.yml:ro
+      - ./traefik/self_signed:/self_signed:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.traefik.rule=Host(`${LOCAL_HOSTNAME}`) && PathPrefix(`/dashboard`)"
+      - "traefik.http.middlewares.traefik-rewrite.stripprefix.prefixes=/dashboard"
+      - "traefik.http.middlewares.traefik-auth.basicauth.users=${TRAEFIK_DASHBOARD_CREDENTIALS}"
+      - "traefik.http.middlewares.traefik-https-redirect.redirectscheme.scheme=https"
+      - "traefik.http.middlewares.sslheader.headers.customrequestheaders.X-Forwarded-Proto=https"
+      - "traefik.http.routers.traefik.middlewares=traefik-https-redirect"
+      - "traefik.http.routers.traefik-secure.entrypoints=https"
+      - "traefik.http.routers.traefik-secure.rule=Host(`${LOCAL_HOSTNAME}`) && PathPrefix(`/dashboard`)"
+      - "traefik.http.routers.traefik-secure.middlewares=traefik-auth"
+      - "traefik.http.routers.traefik-secure.tls=true"
+      - "traefik.http.routers.traefik-secure.service=api@internal"
+
+
+volumes:
+  ollama-data:
+
+networks:
+  ollama:
+  docker-socket-proxy:
